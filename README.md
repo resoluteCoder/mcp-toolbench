@@ -1,4 +1,4 @@
-# tool-test
+# mcp-toolbench
 
 A local tool-calling accuracy harness. It connects to **any MCP server**,
 sends a set of natural-language test queries to an Ollama model with that
@@ -17,7 +17,7 @@ only measures **tool selection** accuracy.
 ## Project structure
 
 ```
-tool-test/
+mcp-toolbench/
 ├── server/
 │   └── tools_server.py        # dummy in-process FastMCP server (6 tools)
 ├── harness/
