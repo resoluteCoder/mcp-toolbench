@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 venv/
+.venv/
+.env
+.env.*
+repos/
+results/
+.deepeval/
+configs/
