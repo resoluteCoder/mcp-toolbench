@@ -8,14 +8,14 @@ format, so it can be fed almost directly into `ollama.chat(tools=...)`.
 
 import asyncio
 
-from fastmcp import Client
-
 
 async def get_tools(server) -> list[dict]:
     """Connect to `server` (anything fastmcp.Client accepts: a FastMCP
     instance for in-process use, a script path, or a URL) and return its
     tools as a list of normalized dicts.
     """
+    from fastmcp import Client
+
     async with Client(server) as client:
         tools = await client.list_tools()
 
