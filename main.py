@@ -149,11 +149,72 @@ other tool.
 Respond with JSON only: {{"easy": "...", "hard": "..."}}"""
 
 
+def _generate_queries(model_str: str, tool: dict) -> dict:
+    """Ask an LLM to generate easy/hard queries for a tool via text completion (no tool-calling)."""
+    import json as _json
+    import os
+
+    from harness.providers import parse_model_string
+
+    provider, model_name = parse_model_string(model_str)
+    prompt = GEN_PROMPT.format(name=tool["name"], description=tool["description"])
+
+    if provider == "anthropic":
+        import anthropic
+
+        project_id = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+        region = os.environ.get("CLOUD_ML_REGION")
+        if project_id and region:
+            client = anthropic.AnthropicVertex(project_id=project_id, region=region)
+        else:
+            client = anthropic.Anthropic()
+
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text
+
+    elif provider == "openai":
+        from openai import OpenAI
+
+        client = OpenAI()
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=256,
+        )
+        text = response.choices[0].message.content
+
+    elif provider == "ollama":
+        from ollama import chat
+
+        response = chat(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.message.content
+
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
+
+    try:
+        start = text.index("{")
+        end = text.rindex("}") + 1
+        return _json.loads(text[start:end])
+    except (ValueError, _json.JSONDecodeError):
+        return {"easy": f"Use {tool['name']}", "hard": f"Use {tool['name']} indirectly"}
+
+
 def cmd_generate(args):
+    from harness.config import SERVERS_DIR
     from harness.mcp_client import get_tools
-    from harness.providers import call_model, detect_default_model
+    from harness.providers import detect_default_model
 
     import asyncio
+
+    import yaml
 
     config = load_server_config(args.server)
     process = setup_server(config)
@@ -167,34 +228,31 @@ def cmd_generate(args):
 
         count = _resolve_coverage(config, args.count, len(tools))
 
-        print(f"Generating test cases for {count}/{len(tools)} tools using {model}...\n")
-        print("test_cases:")
+        static_ids = {c["id"] for c in config.get("test_cases", [])}
+        print(f"Generating test cases for {count}/{len(tools)} tools using {model}...")
+        print(f"Static test cases in {args.server}.yaml: {len(static_ids)}")
 
+        cases = []
         for i, tool in enumerate(tools[:count], start=1):
-            prompt = GEN_PROMPT.format(name=tool["name"], description=tool["description"])
-            result = call_model(model, prompt, [])
-
-            response_text = ""
-            if result:
-                response_text = result[0].input_parameters.get("easy", "") if result[0].input_parameters else ""
-
-            try:
-                import json as _json
-                parsed = _json.loads(response_text) if response_text.strip().startswith("{") else None
-            except (ValueError, TypeError):
-                parsed = None
-
-            if not parsed:
-                parsed = {"easy": f"Use {tool['name']}", "hard": f"Use {tool['name']} indirectly"}
+            parsed = _generate_queries(model, tool)
 
             for variant in ("easy", "hard"):
+                case_id = f"GEN{i:02d}-{variant}"
                 query = parsed.get(variant, f"Use {tool['name']}")
-                print(f"  - id: GEN{i:02d}-{variant}")
-                print(f"    query: \"{query}\"")
-                print(f"    expected_tool: {tool['name']}")
-                print(f"    category: {variant}")
-                print(f"    source: generated")
-                print()
+                cases.append({
+                    "id": case_id,
+                    "query": query,
+                    "expected_tool": tool["name"],
+                    "category": variant,
+                    "source": "generated",
+                })
+
+        out_path = SERVERS_DIR / f"{args.server}.generated.yaml"
+        with open(out_path, "w") as f:
+            yaml.dump({"test_cases": cases}, f, default_flow_style=False, sort_keys=False)
+
+        print(f"\nGenerated {len(cases)} test cases -> {out_path}")
+        print(f"At runtime, these merge with the {len(static_ids)} static cases from {args.server}.yaml")
     finally:
         teardown_server(process, config)
 

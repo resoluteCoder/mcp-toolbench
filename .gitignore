@@ -8,3 +8,4 @@ repos/
 results/
 .deepeval/
 configs/
+servers/*.generated.yaml

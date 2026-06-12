@@ -125,6 +125,25 @@ The `coverage` field controls how many tools `python main.py generate` creates t
 
 Each tool gets an easy (keyword-matching) and hard (paraphrased) query.
 
+### Static vs generated test cases
+
+Test cases live in two places:
+
+- **`servers/<name>.yaml`** — hand-curated static cases, committed to git. These are your ground truth.
+- **`servers/<name>.generated.yaml`** — LLM-generated cases, created by `python main.py generate <name>`. Gitignored.
+
+At runtime, both are merged. Static cases take priority — if a generated case has the same ID as a static one, the generated case is skipped.
+
+### Markdown reports
+
+Use `--output md` to print results as markdown, or `--save-format md` to save a `.md` file. Markdown reports include a **Recommendations** section that analyzes failure patterns:
+
+- List vs retrieve tool confusion
+- Frequently confused tool pairs
+- Queries where no tool was selected
+- Easy vs hard accuracy breakdown
+- Consistently failing tools
+
 ### Transport types
 
 - **`http`** — remote MCP server over streamable HTTP, with optional auth headers
@@ -142,6 +161,6 @@ Results are saved to `results/` as JSON or Markdown.
 
 ## Adding a new server
 
-1. Create `servers/<name>.yaml` with connection details and test cases
-2. Run `python main.py generate <name>` to auto-generate test cases from discovered tools
-3. Review generated cases, then run `python main.py run <name>`
+1. Create `servers/<name>.yaml` with connection details and hand-written test cases
+2. Run `python main.py generate <name>` to auto-generate additional cases into `<name>.generated.yaml`
+3. Run `python main.py run <name>` — static + generated cases are merged automatically

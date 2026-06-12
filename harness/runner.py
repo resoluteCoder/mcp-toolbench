@@ -270,8 +270,139 @@ def render_markdown(run_data: dict) -> str:
         for r in failed:
             lines.append(f"- **{r['id']}**: expected `{r['expected_tool']}`, got `{', '.join(r['runs'][0]) if r['runs'] else 'none'}`")
 
+    lines.extend(_build_recommendations(results, repeats))
+
     lines.append("")
     return "\n".join(lines)
+
+
+def _build_recommendations(results: list[dict], repeats: int) -> list[str]:
+    """Analyze failure patterns and generate actionable recommendations."""
+    from collections import Counter
+
+    failed = [r for r in results if r["pass_count"] < repeats]
+    if not failed:
+        return ["", "## Recommendations", "", "No failures detected."]
+
+    lines = ["", "## Recommendations", ""]
+
+    # --- Pattern 1: list vs retrieve confusion ---
+    list_retrieve_pairs = []
+    for r in failed:
+        expected = r["expected_tool"]
+        got = r["runs"][0] if r["runs"] else []
+        if expected.endswith("_retrieve"):
+            base = expected.rsplit("_retrieve", 1)[0]
+            list_variant = f"{base}_list"
+            if list_variant in got:
+                list_retrieve_pairs.append((expected, list_variant))
+        elif expected.endswith("_list"):
+            base = expected.rsplit("_list", 1)[0]
+            retrieve_variant = f"{base}_retrieve"
+            if retrieve_variant in got:
+                list_retrieve_pairs.append((expected, retrieve_variant))
+
+    if list_retrieve_pairs:
+        tools = sorted(set(f"`{a}` vs `{b}`" for a, b in list_retrieve_pairs))
+        lines.append(f"### List vs Retrieve Confusion ({len(list_retrieve_pairs)} failures)")
+        lines.append("")
+        lines.append("The model confuses `_list` and `_retrieve` variants of the same resource. "
+                      "Queries without a specific ID tend to trigger the list endpoint instead of retrieve.")
+        lines.append("")
+        for pair in tools:
+            lines.append(f"- {pair}")
+        lines.append("")
+        lines.append("**Recommendation:** Improve tool descriptions to clearly differentiate "
+                      "\"list all items\" vs \"get a single item by ID\". Consider merging into a single "
+                      "tool that accepts an optional ID parameter.")
+        lines.append("")
+
+    # --- Pattern 2: similar/duplicate tools ---
+    confused_with = Counter()
+    for r in failed:
+        expected = r["expected_tool"]
+        got = r["runs"][0] if r["runs"] else []
+        for tool_name in got:
+            if tool_name != expected:
+                pair = tuple(sorted([expected, tool_name]))
+                confused_with[pair] += 1
+
+    duplicate_pairs = [(pair, count) for pair, count in confused_with.items()
+                       if count >= 2 and pair not in {tuple(sorted(p)) for p in list_retrieve_pairs}]
+    if duplicate_pairs:
+        duplicate_pairs.sort(key=lambda x: -x[1])
+        lines.append(f"### Frequently Confused Tool Pairs ({len(duplicate_pairs)} pairs)")
+        lines.append("")
+        lines.append("These tool pairs are repeatedly mixed up, suggesting their names or descriptions overlap.")
+        lines.append("")
+        for (a, b), count in duplicate_pairs:
+            lines.append(f"- `{a}` / `{b}` ({count} mix-ups)")
+        lines.append("")
+        lines.append("**Recommendation:** Differentiate tool descriptions, or consider consolidating "
+                      "tools that serve nearly the same purpose.")
+        lines.append("")
+
+    # --- Pattern 3: no tool called ---
+    no_tool = [r for r in failed if r["runs"] and not r["runs"][0]]
+    if no_tool:
+        lines.append(f"### No Tool Selected ({len(no_tool)} failures)")
+        lines.append("")
+        lines.append("The model returned no tool call at all for these queries.")
+        lines.append("")
+        for r in no_tool:
+            lines.append(f"- **{r['id']}** (`{r['expected_tool']}`): \"{r['query']}\"")
+        lines.append("")
+        lines.append("**Recommendation:** These queries may be too vague or use everyday language "
+                      "that doesn't match tool descriptions. Rephrase test queries or improve tool descriptions "
+                      "to cover common phrasings.")
+        lines.append("")
+
+    # --- Pattern 4: easy vs hard breakdown ---
+    easy = [r for r in results if r.get("category") == "easy"]
+    hard = [r for r in results if r.get("category") == "hard"]
+    if easy and hard:
+        easy_rate = sum(r["pass_count"] for r in easy) / (len(easy) * repeats) if easy else 0
+        hard_rate = sum(r["pass_count"] for r in hard) / (len(hard) * repeats) if hard else 0
+        lines.append("### Accuracy by Category")
+        lines.append("")
+        lines.append(f"| Category | Tests | Accuracy |")
+        lines.append(f"|----------|-------|----------|")
+        lines.append(f"| easy | {len(easy)} | {easy_rate:.1%} |")
+        lines.append(f"| hard | {len(hard)} | {hard_rate:.1%} |")
+        lines.append("")
+        if hard_rate < easy_rate - 0.15:
+            lines.append(f"**Recommendation:** Hard queries drop {easy_rate - hard_rate:.0%} below easy queries. "
+                         "The model struggles with paraphrased or indirect queries. Consider adding synonyms "
+                         "and alternate phrasings to tool descriptions.")
+            lines.append("")
+
+    # --- Pattern 5: worst tools ---
+    from collections import defaultdict
+    tool_failures = defaultdict(int)
+    tool_totals = defaultdict(int)
+    for r in results:
+        tool_totals[r["expected_tool"]] += 1
+        if r["pass_count"] < repeats:
+            tool_failures[r["expected_tool"]] += 1
+
+    worst = [(tool, tool_failures[tool], tool_totals[tool])
+             for tool in tool_failures
+             if tool_failures[tool] == tool_totals[tool] and tool_totals[tool] >= 2]
+    if worst:
+        worst.sort(key=lambda x: -x[1])
+        lines.append(f"### Consistently Failing Tools ({len(worst)} tools)")
+        lines.append("")
+        lines.append("These tools failed every test case — the model never selects them.")
+        lines.append("")
+        for tool, fails, total in worst:
+            lines.append(f"- `{tool}` (0/{total} passed)")
+        lines.append("")
+        lines.append("**Recommendation:** These tools may have poor discoverability. "
+                      "Review their names and descriptions for clarity, or consider whether "
+                      "they should be consolidated with similar tools.")
+        lines.append("")
+
+    return lines
 
 
 def save_results(run_data: dict, server_name: str, fmt: str = "json") -> Path:

@@ -68,14 +68,38 @@ def load_tool_source(name: str):
     return _build_tool_source(load_raw_config(name))
 
 
+def _load_generated_cases(name: str) -> list[dict]:
+    """Load generated test cases from servers/<name>.generated.yaml if it exists."""
+    gen_path = SERVERS_DIR / f"{name}.generated.yaml"
+    if not gen_path.exists():
+        return []
+    with open(gen_path) as f:
+        data = yaml.safe_load(f)
+    if not data:
+        return []
+    cases = data if isinstance(data, list) else data.get("test_cases", [])
+    return _interpolate_env(cases)
+
+
 def load_server_config(name: str) -> dict:
-    """Return a structured config dict for the named server."""
+    """Return a structured config dict for the named server.
+
+    Merges static test cases from <name>.yaml with generated cases from
+    <name>.generated.yaml. Static cases take priority — if a generated case
+    has the same ID as a static one, the generated case is skipped.
+    """
     config = load_raw_config(name)
+
+    static_cases = config.get("test_cases", [])
+    generated_cases = _load_generated_cases(name)
+
+    static_ids = {c["id"] for c in static_cases}
+    merged = static_cases + [c for c in generated_cases if c["id"] not in static_ids]
 
     return {
         "name": config.get("name", name),
         "tool_source": _build_tool_source(config),
-        "test_cases": config.get("test_cases", []),
+        "test_cases": merged,
         "models": config.get("models", []),
         "threshold": config.get("threshold", 0.7),
         "repeats": config.get("repeats", 3),
@@ -89,7 +113,10 @@ def load_server_config(name: str) -> dict:
 
 
 def list_servers() -> list[str]:
-    """Return names of all registered servers."""
+    """Return names of all registered servers (excludes .generated.yaml files)."""
     if not SERVERS_DIR.exists():
         return []
-    return sorted(p.stem for p in SERVERS_DIR.glob("*.yaml"))
+    return sorted(
+        p.stem for p in SERVERS_DIR.glob("*.yaml")
+        if not p.name.endswith(".generated.yaml")
+    )
